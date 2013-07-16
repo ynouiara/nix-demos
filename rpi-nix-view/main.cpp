@@ -23,6 +23,10 @@ struct state {
     EGLDisplay display;
     EGLSurface surface;
     EGLContext context;
+
+    WKViewRef webView;
+
+    bool      display_update_scheduled;
 };
 
 struct state g_state;
@@ -119,12 +123,34 @@ static void ogl_exit(struct state *state)
     eglTerminate(state->display);
 }
 
+static void updateDisplay(){
+
+    eglMakeCurrent(g_state.display, g_state.surface, g_state.surface, g_state.context);    
+    glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    WKViewPaintToCurrentGLContext(g_state.webView);
+    eglSwapBuffers(g_state.display, g_state.surface);
+}
+
+static gboolean callUpdateDisplay(gpointer data)
+{   
+    g_state.display_update_scheduled = false;
+    updateDisplay();
+    return 0;
+}
+
+static void scheduleUpdateDisplay()
+{
+    if (g_state.display_update_scheduled)
+        return;
+
+    g_state.display_update_scheduled = true;
+    g_timeout_add(0, callUpdateDisplay, NULL);
+}
+
 static void viewNeedsDisplay(WKViewRef webView, WKRect, const void*)
 {
-    glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    WKViewPaintToCurrentGLContext(webView);
-    eglSwapBuffers(g_state.display, g_state.surface);
+    scheduleUpdateDisplay();
 }
 
 static void didReceiveTitleForFrame(WKPageRef page, WKStringRef title, WKFrameRef, WKTypeRef, const void*)
@@ -144,20 +170,21 @@ int main(int argc, char* argv[])
     bcm_host_init();
 
     memset(&g_state, 0, sizeof(struct state));
+    g_state.display_update_scheduled = false;
     ogl_init(&g_state);
 
     GMainLoop* mainLoop = g_main_loop_new(0, false);
     WKContextRef context = WKContextCreateWithInjectedBundlePath(WKStringCreateWithUTF8CString(SAMPLE_INJECTEDBUNDLE_DIR "libSampleInjectedBundle.so"));
-    WKViewRef webView = WKViewCreate(context, NULL);
-    WKPageRef page = WKViewGetPage(webView);
+    g_state.webView = WKViewCreate(context, NULL);
+    WKPageRef page = WKViewGetPage(g_state.webView);
 
     WKViewClient viewClient;
     memset(&viewClient, 0, sizeof(WKViewClient));
     viewClient.version = kWKViewClientCurrentVersion;
     viewClient.viewNeedsDisplay = viewNeedsDisplay;
-    WKViewSetViewClient(webView, &viewClient);
+    WKViewSetViewClient(g_state.webView, &viewClient);
 
-    WKViewInitialize(webView);
+    WKViewInitialize(g_state.webView);
 
     WKPageLoaderClient loaderClient;
     memset(&loaderClient, 0, sizeof(loaderClient));
@@ -165,7 +192,7 @@ int main(int argc, char* argv[])
     loaderClient.didReceiveTitleForFrame = didReceiveTitleForFrame;
     WKPageSetPageLoaderClient(page, &loaderClient);
 
-    WKViewSetSize(webView, WKSizeMake(g_state.screen_width, g_state.screen_height));
+    WKViewSetSize(g_state.webView, WKSizeMake(g_state.screen_width, g_state.screen_height));
     WKPageLoadURL(page, WKURLCreateWithUTF8CString(url));
 
     //ProfilerFlush();
@@ -173,7 +200,7 @@ int main(int argc, char* argv[])
 
     g_main_loop_run(mainLoop);
 
-    WKRelease(webView);
+    WKRelease(g_state.webView);
     WKRelease(context);
     g_main_loop_unref(mainLoop);
 
